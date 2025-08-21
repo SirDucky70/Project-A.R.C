@@ -1,0 +1,122 @@
+
+// This code makes the 40kHz signal sequence through the Ultrasonic speakers
+// in a circular fashion at any desired speed.
+
+//Pins
+// 17(IO17), 16(IO16), 15(TDO), 14(TMS), 13(TCK), 12(TDI), 5(IO5), 4(IO4)
+// 19(IO19), 23(IO23), 18(IO18)
+
+// Pin Index:
+// Index | GPIO
+//   0   | 4
+//   1   | 12
+//   2   | 16
+//   3   | 17
+//   4   | 5
+//   5   | 23
+//   6   | 19
+//   7   | 18
+
+#include <Arduino.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_task_wdt.h"
+#include "esp_system.h"
+
+// ---------- Pins ----------
+const int pins[] = {4, 12, 16, 17};
+const int pinCount = sizeof(pins) / sizeof(pins[0]);
+const int enablePin = 33;
+
+// ---------- Waveform parameters ----------
+volatile int phaseShift = 5;          // 0..63
+volatile uint32_t freqHz = 40000;     // default frequency
+const uint32_t CPU_HZ = 240000000;    // ESP32 CPU frequency
+
+// Computed timing constants (not volatile)
+uint32_t cyclesPerPhase;
+uint32_t cyclesPerHalf;
+
+// ---------- Phase table ----------
+int phaseShiftsTable[64][4] = {0};  // your per-pin phase offsets
+
+// ---------- Timing update function ----------
+void updateTiming() {
+    // Read freqHz atomically
+    uint32_t f = freqHz;
+    if (f == 0) f = 1;  // avoid divide by zero
+    cyclesPerPhase = CPU_HZ / f;
+    cyclesPerHalf = cyclesPerPhase / 2;
+}
+
+// ---------- Waveform task ----------
+void waveTask(void* param) {
+    while (true) {
+        uint32_t phase = ESP.getCycleCount() % cyclesPerPhase;
+        uint32_t parallel1 = 0;
+        uint32_t parallel0 = 0;
+
+        for (int i = 0; i < pinCount; i++) {
+            if ((phaseShiftsTable[phaseShift][i] + phase) % cyclesPerPhase > cyclesPerHalf)
+                parallel1 |= (1UL << pins[i]);
+            else
+                parallel0 |= (1UL << pins[i]);
+        }
+
+        *(volatile uint32_t*)GPIO_OUT_W1TS_REG = parallel1; // Set HIGH
+        *(volatile uint32_t*)GPIO_OUT_W1TC_REG = parallel0; // Set LOW
+
+    }
+}
+
+void setup() {
+    Serial.begin(115200);
+    Serial.println("Starting Up");
+
+    for (int i = 0; i < pinCount; i++) pinMode(pins[i], OUTPUT);
+    pinMode(enablePin, OUTPUT);
+    digitalWrite(enablePin, HIGH);
+
+    // Disable watchdogs
+    disableCore0WDT();
+    disableCore1WDT();
+    disableLoopWDT();
+
+    // Initialize timing
+    updateTiming();
+
+    // Start waveform task on Core 0
+    xTaskCreatePinnedToCore(waveTask, "WaveTask", 16384, NULL, 2, NULL, 0);
+}
+
+void loop() {
+    if (Serial.available()) {
+        String cmd = Serial.readStringUntil('\n');
+        cmd.trim();
+
+        if (cmd.equalsIgnoreCase("reset")) {
+            Serial.println("Manual reset triggered!");
+            delay(100);
+            esp_restart();
+        } else if (cmd.startsWith("freq")) {
+            int f = cmd.substring(5).toInt();
+            if (f >= 1000 && f <= 100000) {  // safe frequency range
+                freqHz = f;
+                updateTiming();  // recalc cyclesPerPhase
+                Serial.print("Frequency set to: ");
+                Serial.println(freqHz);
+            } else {
+                Serial.println("Invalid frequency. Enter 1000..100000 Hz");
+            }
+        } else {
+            int newShift = cmd.toInt();
+            if (newShift >= 0 && newShift < 64) {
+                phaseShift = newShift;
+                Serial.print("Phase shift set to: ");
+                Serial.println(phaseShift);
+            } else {
+                Serial.println("Invalid input. Enter 0–63 for phase, or 'freq N' for frequency.");
+            }
+        }
+    }
+}
