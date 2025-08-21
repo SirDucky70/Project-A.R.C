@@ -1,4 +1,4 @@
-// This code makes the 40kHz signal sequence through the Ultrasonic speakers
+// This code makes the 40kHz signal sequence through the Ultrasonic speakers 
 // in a circular fashion at any desired speed.
 
 //Pins
