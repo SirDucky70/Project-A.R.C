@@ -1,0 +1,75 @@
+// This code makes the 40kHz signal sequence through the Ultrasonic speakers
+// in a circular fashion at any desired speed.
+
+//Pins
+// 17(IO17), 16(IO16), 15(TDO), 14(TMS), 13(TCK), 12(TDI), 5(IO5), 4(IO4)
+// 19(IO19), 23(IO23), 18(IO18)
+
+// Pin Index:
+// Index | GPIO
+//   0   | 4
+//   1   | 12
+//   2   | 16
+//   3   | 17
+//   4   | 5
+//   5   | 23
+//   6   | 19
+//   7   | 18
+
+#include <Arduino.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+// Pins configuration
+const int pins[] = {4, 12, 16, 17}; // 5, 23, 19, 18}
+const int pinCount = sizeof(pins) / sizeof(pins[0]);
+const int enablePin = 33;
+
+// Timing constants
+const unsigned long cyclesPerSecond = 240000000;
+const unsigned long cyclesPerMicroSecond = cyclesPerSecond / 1000000;
+const unsigned long cyclesPerPhase = cyclesPerSecond / 40000;
+const unsigned long cyclesPerPhaseHalf = cyclesPerPhase / 2;
+
+// Waveform control
+int phaseShifts[64][4] = {0};
+volatile int phaseShift = 5;
+
+void waveTask(void *param) {
+  while (true) {
+    digitalWrite(enablePin, HIGH);
+
+    unsigned long phase = ESP.getCycleCount() % cyclesPerPhase;
+    unsigned long parallel1 = 0;
+    unsigned long parallel0 = 0;
+
+    // Drive all pins at once based on waveform phase
+    for (int i = 0; i < pinCount; i++) {
+      if ((phaseShifts[phaseShift][i] + phase) % cyclesPerPhase > cyclesPerPhaseHalf)
+        parallel1 |= 1UL << pins[i];
+      else
+        parallel0 |= 1UL << pins[i];
+    }
+
+    *(unsigned long*)GPIO_OUT_W1TS_REG = parallel1; // Set HIGH
+    *(unsigned long*)GPIO_OUT_W1TC_REG = parallel0; // Set LOW
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  while (!Serial) delay(10);
+
+  Serial.println("Starting");
+
+  for (int i = 0; i < pinCount; i++)
+    pinMode(pins[i], OUTPUT);
+
+  pinMode(enablePin, OUTPUT);
+
+  xTaskCreatePinnedToCore(waveTask, "WaveTask", 10000, NULL, 2, NULL, 1);
+}
+
+void loop() {
+  // Nothing here
+}
